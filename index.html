@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0f1c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Mounjaro Click Count & Dose Calculator">
+  <title>Mounjaro Calculator</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    html, body, #root {
+      height: 100%;
+      width: 100%;
+      overflow-x: hidden;
+    }
+    
+    body {
+      background: #0a0f1c;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* Android status bar safe area */
+    .app-container {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useCallback, useMemo } = React;
+
+    // Pen data: each pen has 4 full doses + golden dose residual
+    const PEN_DATA = {
+      2.5: { totalMg: 10, fullDoses: 4, goldenDoseMg: 2.4, clicksPerFullDose: 60 },
+      5: { totalMg: 20, fullDoses: 4, goldenDoseMg: 4.8, clicksPerFullDose: 60 },
+      7.5: { totalMg: 30, fullDoses: 4, goldenDoseMg: 7.2, clicksPerFullDose: 60 },
+      10: { totalMg: 40, fullDoses: 4, goldenDoseMg: 9.6, clicksPerFullDose: 60 },
+      12.5: { totalMg: 50, fullDoses: 4, goldenDoseMg: 12, clicksPerFullDose: 60 },
+      15: { totalMg: 60, fullDoses: 4, goldenDoseMg: 14.4, clicksPerFullDose: 60 },
+    };
+
+    const FREQUENCIES = [
+      { days: 14, label: '14 Days' },
+      { days: 10, label: '10 Days' },
+      { days: 7, label: '7 Days' },
+      { days: 6, label: '6 Days' },
+      { days: 5, label: '5 Days' },
+      { days: 4, label: '4 Days' },
+      { days: 3.5, label: '3.5 Days' },
+      { days: 3, label: '3 Days' },
+      { days: 2, label: '2 Days' },
+    ];
+
+    const calculateDrugLevels = (doseMg, frequencyDays) => {
+      const halfLife = 5;
+      const decayRate = Math.log(2) / halfLife;
+      const steadyStateFactor = 1 / (1 - Math.exp(-decayRate * frequencyDays));
+      const high = doseMg * steadyStateFactor;
+      const low = high * Math.exp(-decayRate * frequencyDays);
+      return { high: high.toFixed(2), low: low.toFixed(2) };
+    };
+
+    const InfoTooltip = ({ text }) => {
+      const [show, setShow] = useState(false);
+      
+      return (
+        <span className="tooltip-container" onClick={() => setShow(!show)} onBlur={() => setShow(false)}>
+          <span className="info-icon">ⓘ</span>
+          {show && <span className="tooltip-text">{text}</span>}
+        </span>
+      );
+    };
+
+    const Toggle = ({ checked, onChange, label }) => (
+      <label className="toggle-container">
+        <span className="toggle-label">{label}</span>
+        <div className="toggle-switch">
+          <input type="checkbox" checked={checked} onChange={onChange} />
+          <span className="toggle-slider"></span>
+        </div>
+      </label>
+    );
+
+    const PenButton = ({ size, selected, onClick }) => (
+      <button className={`pen-button ${selected ? 'selected' : ''}`} onClick={onClick}>
+        <span className="pen-value">{size}</span>
+        <span className="pen-unit">mg</span>
+      </button>
+    );
+
+    const FrequencyButton = ({ freq, selected, onClick }) => (
+      <button className={`freq-button ${selected ? 'selected' : ''}`} onClick={onClick}>
+        {freq.label}
+      </button>
+    );
+
+    const ResultCard = ({ icon, title, value, subtitle, tooltip }) => (
+      <div className="result-card">
+        <div className="result-icon">{icon}</div>
+        <div className="result-content">
+          <div className="result-title">
+            {title}
+            {tooltip && <InfoTooltip text={tooltip} />}
+          </div>
+          <div className="result-value">{value}</div>
+          {subtitle && <div className="result-subtitle">{subtitle}</div>}
+        </div>
+      </div>
+    );
+
+    function MounjaroCalculator() {
+      const [penSize, setPenSize] = useState(10);
+      const [useGoldenDose, setUseGoldenDose] = useState(true);
+      const [desiredDose, setDesiredDose] = useState('');
+      const [penCost, setPenCost] = useState('');
+      const [frequency, setFrequency] = useState(7);
+      const [showAdvanced, setShowAdvanced] = useState(false);
+      const [unitsDrawn, setUnitsDrawn] = useState('');
+      const [results, setResults] = useState(null);
+      const [showResults, setShowResults] = useState(false);
+      const [copied, setCopied] = useState(false);
+
+      const penInfo = PEN_DATA[penSize];
+      const mgPerClick = penSize / penInfo.clicksPerFullDose;
+
+      const partialMg = useMemo(() => {
+        if (!unitsDrawn || isNaN(parseFloat(unitsDrawn))) return '';
+        return (parseFloat(unitsDrawn) * mgPerClick).toFixed(2);
+      }, [unitsDrawn, mgPerClick]);
+
+      const calculate = useCallback(() => {
+        const dose = parseFloat(desiredDose);
+        if (!dose || dose <= 0) return;
+
+        const totalAvailableMg = useGoldenDose 
+          ? penInfo.totalMg + penInfo.goldenDoseMg 
+          : penInfo.totalMg;
+        
+        const clicksPerDose = Math.round(dose / mgPerClick);
+        const totalInjections = Math.floor(totalAvailableMg / dose);
+        
+        const maxClickDoses = Math.floor((penInfo.clicksPerFullDose * penInfo.fullDoses) / clicksPerDose);
+        const clickInjections = Math.min(maxClickDoses, totalInjections);
+        
+        let syringeInjections = 0;
+        if (useGoldenDose) {
+          const remainingMgAfterClicks = totalAvailableMg - (clickInjections * dose);
+          syringeInjections = Math.floor(remainingMgAfterClicks / dose);
+        }
+
+        const actualTotalInjections = clickInjections + syringeInjections;
+        const penDuration = actualTotalInjections * frequency;
+        const penDurationWeeks = (penDuration / 7).toFixed(1);
+
+        const drugLevels = calculateDrugLevels(dose, frequency);
+
+        const cost = parseFloat(penCost);
+        const costPerInjection = cost && cost > 0 ? (cost / actualTotalInjections).toFixed(2) : null;
+        const costPerWeek = cost && cost > 0 ? ((cost / actualTotalInjections) * (7 / frequency)).toFixed(2) : null;
+
+        setResults({
+          clicks: clicksPerDose,
+          totalInjections: actualTotalInjections,
+          clickInjections,
+          syringeInjections,
+          penDurationDays: penDuration,
+          penDurationWeeks,
+          drugLevels,
+          costPerInjection,
+          costPerWeek,
+          dose,
+          frequency,
+        });
+        setShowResults(true);
+      }, [desiredDose, penSize, useGoldenDose, frequency, penCost, penInfo, mgPerClick]);
+
+      const reset = () => {
+        setDesiredDose('');
+        setPenCost('');
+        setUnitsDrawn('');
+        setResults(null);
+        setShowResults(false);
+      };
+
+      const copyResults = () => {
+        if (!results) return;
+        const text = `Mounjaro Calculator Results\n━━━━━━━━━━━━━━━━━━━━━━━━\nPen Size: ${penSize}mg\nDesired Dose: ${results.dose}mg\nFrequency: Every ${results.frequency} days\nGolden Dose: ${useGoldenDose ? 'Yes' : 'No'}\n\n📊 ${results.clicks} Clicks/Units per dose\n💉 ${results.totalInjections} Total Injections\n   • ${results.clickInjections} using pen dial\n   • ${results.syringeInjections} using syringe\n📅 Pen lasts: ${results.penDurationWeeks} weeks\n📈 Drug levels: High ${results.drugLevels.high} / Low ${results.drugLevels.low}\n${results.costPerInjection ? `💰 £${results.costPerInjection}/injection (£${results.costPerWeek}/week)` : ''}`;
+        
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      };
+
+      return (
+        <div className="app-container">
+          <header className="header">
+            <div className="logo-container">
+              <div className="logo-icon">💉</div>
+              <h1 className="app-title">Mounjaro</h1>
+            </div>
+            <p className="app-subtitle">Click Count & Dose Calculator</p>
+          </header>
+
+          <div className="warning-banner">
+            <span className="warning-icon">⚠️</span>
+            <p className="warning-text">
+              This calculator is for informational purposes only. Using your KwikPen differently than manufacturer instructions is at your own risk. Always consult your healthcare provider.
+            </p>
+          </div>
+
+          <main className="main-content">
+            <div className="calculator-card">
+              <div className="section-title">Select Pen Size</div>
+              <div className="pen-grid">
+                {Object.keys(PEN_DATA).map(size => (
+                  <PenButton
+                    key={size}
+                    size={size}
+                    selected={penSize === parseFloat(size)}
+                    onClick={() => setPenSize(parseFloat(size))}
+                  />
+                ))}
+              </div>
+
+              <Toggle 
+                label="Using Golden Dose?"
+                checked={useGoldenDose}
+                onChange={(e) => setUseGoldenDose(e.target.checked)}
+              />
+
+              <div className="input-group">
+                <label className="input-label">
+                  Desired Dose (mg)
+                  <InfoTooltip text="Enter the dose you want to inject each time. Do not use for doses below 1mg." />
+                </label>
+                <input
+                  type="number"
+                  className="input-field"
+                  placeholder="Enter desired dose"
+                  value={desiredDose}
+                  onChange={(e) => setDesiredDose(e.target.value)}
+                  inputMode="decimal"
+                  min="0.5"
+                  step="0.5"
+                />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">
+                  Cost of Pen (£) — Optional
+                  <InfoTooltip text="Enter the cost of your pen to calculate cost per injection and per week." />
+                </label>
+                <input
+                  type="number"
+                  className="input-field"
+                  placeholder="Optional"
+                  value={penCost}
+                  onChange={(e) => setPenCost(e.target.value)}
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                />
+              </div>
+
+              <div className="section-title" style={{marginTop: '24px'}}>Partial Injection Helper</div>
+              <div className="input-row">
+                <input
+                  type="number"
+                  className="input-field"
+                  placeholder="Units drawn"
+                  value={unitsDrawn}
+                  onChange={(e) => setUnitsDrawn(e.target.value)}
+                  inputMode="decimal"
+                  step="0.01"
+                />
+                <input
+                  type="text"
+                  className="input-field readonly"
+                  placeholder="mg"
+                  value={partialMg ? `${partialMg} mg` : ''}
+                  readOnly
+                />
+              </div>
+
+              <div className="advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
+                <span className="advanced-toggle-text">Advanced Options</span>
+                <span className={`advanced-toggle-icon ${showAdvanced ? 'open' : ''}`}>▼</span>
+              </div>
+
+              <div className={`advanced-section ${showAdvanced ? 'visible' : ''}`}>
+                <div className="section-title">Injection Frequency</div>
+                <div className="freq-grid">
+                  {FREQUENCIES.map(freq => (
+                    <FrequencyButton
+                      key={freq.days}
+                      freq={freq}
+                      selected={frequency === freq.days}
+                      onClick={() => setFrequency(freq.days)}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="button-row">
+                <button className="calculate-btn" onClick={calculate}>Calculate</button>
+                <button className="reset-btn" onClick={reset}>Reset</button>
+              </div>
+            </div>
+
+            {showResults && results && (
+              <div className="calculator-card results-section">
+                <div className="results-header">
+                  <h2 className="results-title">Your Results</h2>
+                  <button className={`copy-btn ${copied ? 'copied' : ''}`} onClick={copyResults}>
+                    {copied ? '✓ Copied' : '📋 Copy'}
+                  </button>
+                </div>
+
+                <ResultCard
+                  icon="🎯"
+                  title="Clicks / Units"
+                  value={results.clicks}
+                  tooltip="The number of clicks to dial-in the dose, or Units to extract with a U100 insulin syringe when using the Golden Dose."
+                />
+
+                <ResultCard
+                  icon="💉"
+                  title="Total Injections"
+                  value={results.totalInjections}
+                  subtitle={`${results.clickInjections} using pen dial • ${results.syringeInjections} using syringe`}
+                  tooltip="Total injections from this pen, including Golden Dose liquid if enabled."
+                />
+
+                <ResultCard
+                  icon="📅"
+                  title="Pen Duration"
+                  value={`${results.penDurationWeeks} weeks`}
+                  subtitle={`${results.penDurationDays} days total`}
+                  tooltip="How long one pen will last based on your dose and schedule."
+                />
+
+                <ResultCard
+                  icon="📈"
+                  title="Drug Levels"
+                  value={
+                    <div className="drug-levels">
+                      <div className="level-item">
+                        <span className="level-dot high"></span>
+                        <span className="level-label">High:</span>
+                        <span className="level-value">{results.drugLevels.high}</span>
+                      </div>
+                      <div className="level-item">
+                        <span className="level-dot low"></span>
+                        <span className="level-label">Low:</span>
+                        <span className="level-value">{results.drugLevels.low}</span>
+                      </div>
+                    </div>
+                  }
+                  tooltip="Estimated Tirzepatide levels in your system on injection day (high) and day before next injection (low)."
+                />
+
+                {results.costPerInjection && (
+                  <ResultCard
+                    icon="💰"
+                    title="Cost Breakdown"
+                    value={`£${results.costPerInjection} / injection`}
+                    subtitle={`£${results.costPerWeek} per week`}
+                    tooltip="Cost per injection and weekly cost based on your pen price and dosing schedule."
+                  />
+                )}
+
+                <div className="disclaimer">
+                  <p className="disclaimer-text">
+                    <strong>Note:</strong> This calculator is for Mounjaro (Tirzepatide) only, based on the Eli Lilly 4-dose KwikPen. Drug level estimates are approximations based on publicly available pharmacokinetic data. This is not medical advice — consult your healthcare provider before making any changes.
+                  </p>
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<MounjaroCalculator />);
+  </script>
+
+  <style>
+    .app-container {
+      min-height: 100vh;
+      background: linear-gradient(165deg, #0a0f1c 0%, #111827 40%, #1a1f35 100%);
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #fff;
+      padding: 0;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    .app-container::before {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: 
+        radial-gradient(ellipse at 20% 20%, rgba(45, 212, 191, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 80%, rgba(168, 85, 247, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 50%, rgba(34, 197, 94, 0.04) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .header {
+      position: relative;
+      z-index: 1;
+      padding: 24px 20px 16px;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(45, 212, 191, 0.08) 0%, transparent 100%);
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .logo-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 50%, #0d9488 100%);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 4px 20px rgba(45, 212, 191, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+      animation: pulse-glow 3s ease-in-out infinite;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 4px 20px rgba(45, 212, 191, 0.4), inset 0 1px 0 rgba(255,255,255,0.2); }
+      50% { box-shadow: 0 4px 30px rgba(45, 212, 191, 0.6), inset 0 1px 0 rgba(255,255,255,0.2); }
+    }
+
+    .app-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 26px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.5px;
+    }
+
+    .app-subtitle {
+      font-size: 13px;
+      color: #64748b;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .warning-banner {
+      margin: 0 16px 16px;
+      padding: 14px 16px;
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(234, 88, 12, 0.1) 100%);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      border-radius: 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .warning-icon { font-size: 20px; flex-shrink: 0; }
+
+    .warning-text {
+      font-size: 12px;
+      color: #fbbf24;
+      line-height: 1.5;
+      font-weight: 500;
+    }
+
+    .main-content {
+      position: relative;
+      z-index: 1;
+      padding: 0 16px 100px;
+    }
+
+    .calculator-card {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.8) 0%, rgba(30, 41, 59, 0.6) 100%);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 24px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      color: #2dd4bf;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(45, 212, 191, 0.3) 0%, transparent 100%);
+    }
+
+    .pen-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .pen-button {
+      background: rgba(51, 65, 85, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 14px 8px;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .pen-button:active { transform: scale(0.95); }
+
+    .pen-button.selected {
+      background: linear-gradient(135deg, rgba(45, 212, 191, 0.2) 0%, rgba(20, 184, 166, 0.15) 100%);
+      border-color: #2dd4bf;
+      box-shadow: 0 0 20px rgba(45, 212, 191, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+
+    .pen-value {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .pen-button.selected .pen-value { color: #2dd4bf; }
+
+    .pen-unit { font-size: 11px; color: #64748b; font-weight: 500; }
+
+    .pen-button.selected .pen-unit { color: #5eead4; }
+
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      background: rgba(51, 65, 85, 0.3);
+      border-radius: 14px;
+      margin-bottom: 16px;
+      cursor: pointer;
+    }
+
+    .toggle-label { font-size: 15px; font-weight: 500; color: #e2e8f0; }
+
+    .toggle-switch { position: relative; width: 52px; height: 28px; }
+
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(71, 85, 105, 0.8);
+      transition: 0.3s;
+      border-radius: 28px;
+    }
+
+    .toggle-slider::before {
+      position: absolute;
+      content: "";
+      height: 22px;
+      width: 22px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 100%);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(24px);
+    }
+
+    .input-group { margin-bottom: 16px; }
+
+    .input-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 8px;
+    }
+
+    .input-field {
+      width: 100%;
+      padding: 16px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      font-family: 'Space Grotesk', sans-serif;
+      transition: all 0.3s;
+    }
+
+    .input-field:focus {
+      outline: none;
+      border-color: #2dd4bf;
+      box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.15);
+      background: rgba(15, 23, 42, 0.8);
+    }
+
+    .input-field::placeholder { color: #475569; font-weight: 400; }
+
+    .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    .input-field.readonly {
+      background: rgba(45, 212, 191, 0.1);
+      border-color: rgba(45, 212, 191, 0.2);
+      color: #2dd4bf;
+    }
+
+    .freq-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+    .freq-button {
+      background: rgba(51, 65, 85, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 12px 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .freq-button:active { transform: scale(0.95); }
+
+    .freq-button.selected {
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(139, 92, 246, 0.15) 100%);
+      border-color: #a855f7;
+      color: #c4b5fd;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .calculate-btn {
+      background: linear-gradient(135deg, #2dd4bf 0%, #14b8a6 50%, #0d9488 100%);
+      border: none;
+      border-radius: 16px;
+      padding: 18px 32px;
+      font-size: 16px;
+      font-weight: 700;
+      color: #042f2e;
+      cursor: pointer;
+      transition: all 0.3s;
+      box-shadow: 0 4px 20px rgba(45, 212, 191, 0.4), inset 0 1px 0 rgba(255,255,255,0.3);
+      font-family: 'Space Grotesk', sans-serif;
+      letter-spacing: 0.5px;
+    }
+
+    .calculate-btn:active { transform: scale(0.97); }
+
+    .reset-btn {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: 16px;
+      padding: 18px 24px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #f87171;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .results-section { animation: slideUp 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .results-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .copy-btn {
+      background: rgba(51, 65, 85, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #94a3b8;
+      cursor: pointer;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .copy-btn.copied {
+      background: rgba(34, 197, 94, 0.2);
+      border-color: rgba(34, 197, 94, 0.4);
+      color: #4ade80;
+    }
+
+    .result-card {
+      background: rgba(51, 65, 85, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      animation: fadeIn 0.4s ease-out backwards;
+    }
+
+    .result-card:nth-child(2) { animation-delay: 0.1s; }
+    .result-card:nth-child(3) { animation-delay: 0.15s; }
+    .result-card:nth-child(4) { animation-delay: 0.2s; }
+    .result-card:nth-child(5) { animation-delay: 0.25s; }
+    .result-card:nth-child(6) { animation-delay: 0.3s; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(-10px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .result-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, rgba(45, 212, 191, 0.15) 0%, rgba(20, 184, 166, 0.1) 100%);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .result-content { flex: 1; min-width: 0; }
+
+    .result-title {
+      font-size: 13px;
+      color: #94a3b8;
+      font-weight: 500;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .result-value {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 24px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.2;
+    }
+
+    .result-subtitle {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+
+    .tooltip-container { position: relative; display: inline-flex; align-items: center; }
+
+    .info-icon { font-size: 14px; color: #64748b; cursor: help; transition: color 0.2s; }
+
+    .tooltip-text {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e293b;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: #cbd5e1;
+      width: 220px;
+      line-height: 1.5;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+      z-index: 100;
+    }
+
+    .disclaimer {
+      margin-top: 20px;
+      padding: 16px;
+      background: rgba(51, 65, 85, 0.2);
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .disclaimer-text { font-size: 11px; color: #64748b; line-height: 1.6; }
+
+    .advanced-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px;
+      margin: 16px 0;
+      background: rgba(168, 85, 247, 0.1);
+      border: 1px solid rgba(168, 85, 247, 0.2);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .advanced-toggle-text { font-size: 13px; font-weight: 600; color: #c4b5fd; }
+
+    .advanced-toggle-icon { font-size: 12px; color: #a855f7; transition: transform 0.3s; }
+
+    .advanced-toggle-icon.open { transform: rotate(180deg); }
+
+    .advanced-section {
+      overflow: hidden;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      max-height: 0;
+      opacity: 0;
+    }
+
+    .advanced-section.visible { max-height: 400px; opacity: 1; }
+
+    .drug-levels { display: flex; gap: 16px; margin-top: 8px; }
+
+    .level-item { display: flex; align-items: center; gap: 6px; }
+
+    .level-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    .level-dot.high { background: #22c55e; }
+
+    .level-dot.low { background: #f59e0b; }
+
+    .level-label { font-size: 12px; color: #94a3b8; }
+
+    .level-value {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    @media (max-width: 400px) {
+      .pen-grid { grid-template-columns: repeat(2, 1fr); }
+      .freq-grid { grid-template-columns: repeat(2, 1fr); }
+      .button-row { grid-template-columns: 1fr; }
+      .result-value { font-size: 20px; }
+    }
+
+    @media (min-width: 768px) {
+      .app-container { display: flex; flex-direction: column; align-items: center; }
+      .header, .warning-banner, .main-content { max-width: 480px; width: 100%; }
+      .warning-banner { margin-left: auto; margin-right: auto; }
+    }
+  </style>
+</body>
+</html>
